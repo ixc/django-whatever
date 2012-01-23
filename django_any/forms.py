@@ -6,13 +6,14 @@ Django forms data generators
 """
 import random
 from datetime import date, datetime, time
+from string import hexdigits
+
 from django import forms
 from django.utils import formats
-from django_any import xunit
-from django_any.functions import valid_choices, split_model_kwargs, \
-    ExtensionMethod
 from django.core.validators import validate_ipv4_address
-from string import hexdigits
+
+from django_any import xunit, any_form, any_form_field
+from django_any.utils import split_model_kwargs, valid_choices, Value
 
 try:
     from django.core.validators import validate_ipv6_address, validate_ipv46_address
@@ -20,31 +21,8 @@ except ImportError:
     validate_ipv6_address = None
     validate_ipv46_address = None
 
-any_form = ExtensionMethod()
-any_form_field = ExtensionMethod()
-
-
-@any_form.register_default
-def any_form_default(form_cls, **kwargs):
-    """
-    Returns tuple with form data and files
-    """
-    form_data = {}
-    form_files = {}
-
-    form_fields, fields_args = split_model_kwargs(kwargs)
-
-    for name, field in form_cls.base_fields.iteritems():
-        if name in form_fields:
-            form_data[name] = kwargs[name]
-        else:
-            form_data[name] = any_form_field(field, **fields_args[name])
-
-    return form_data, form_files
-
-
-@any_form_field.decorator
-def field_required_attribute(function):
+@any_form_field.add_rule
+def field_required_attribute(field, **kwargs):
     """
     Sometimes return None if field is not required
 
@@ -52,24 +30,17 @@ def field_required_attribute(function):
     >>> result in ['', 'True', 'False']
     True
     """
-    def _wrapper(field, **kwargs):
-        if not field.required and random.random < 0.1:
-            return None
-        return function(field, **kwargs)
-    return _wrapper
+    if not field.required and random.random < 0.1:
+        return Value(None)
 
 
-@any_form_field.decorator
-def field_choices_attibute(function):
+@any_form_field.add_rule
+def field_choices_attibute(field, **kwargs):
     """
     Selection from field.choices
     """
-    def _wrapper(field, **kwargs):
-        if hasattr(field.widget, 'choices'):
-            return random.choice(list(valid_choices(field.widget.choices)))
-        return function(field, **kwargs)
-
-    return _wrapper
+    if hasattr(field.widget, 'choices'):
+        return Value(random.choice(list(valid_choices(field.widget.choices))))
 
 
 @any_form_field.register(forms.BooleanField)
@@ -118,7 +89,7 @@ def decimal_field_data(field, **kwargs):
             min_value = elem.limit_value
         if isinstance(elem, MaxValueValidator):
             max_value = elem.limit_value
-    if (field.max_digits and field.decimal_places):
+    if field.max_digits and field.decimal_places:
         from decimal import Decimal
         max_value = min(max_value,
                         Decimal('%s.%s' % ('9'*(field.max_digits-field.decimal_places),
@@ -409,7 +380,6 @@ def multiple_choice_field_data(field, **kwargs):
     <type 'str'>
     """
     if field.choices:
-        from django_any.functions import valid_choices 
         l = list(valid_choices(field.choices))
         random.shuffle(l)
         choices = []

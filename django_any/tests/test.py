@@ -31,8 +31,8 @@ def view(request):
 
 
 urlpatterns = patterns('',
-     (r'^admin/', include(admin.site.urls)),
-     (r'^view/', view),
+    (r'^admin/', include(admin.site.urls)),
+    (r'^view/', view),
 )
 
 

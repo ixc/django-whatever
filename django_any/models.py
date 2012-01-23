@@ -3,50 +3,52 @@
 """
 Values generators for common Django Fields
 """
-from django.contrib.contenttypes.models import ContentType
 import re, os, random
 from decimal import Decimal
 from datetime import date, datetime, time
 from string import ascii_letters, digits, hexdigits
 from random import choice
 
-from django.core.exceptions import ValidationError
 from django.core import validators
-from django.db import models, IntegrityError
-from django.db.models import Q
+from django.db import models
 from django.db.models.fields.files import FieldFile
 from django.contrib.webdesign.lorem_ipsum import paragraphs
-
 from django.core.validators import validate_ipv4_address
+from django_any.utils import valid_choices
+
+from django.conf import settings
+
 try:
-    from django.core.validators import validate_ipv6_address, validate_ipv46_address
+    from django.core.validators import validate_ipv6_address,\
+        validate_ipv46_address
 except ImportError:
     validate_ipv6_address = None
     validate_ipv46_address = None
 
-from django_any import xunit
-from django_any.functions import valid_choices, split_model_kwargs, ExtensionMethod
+from django_any import xunit,\
+    any_field, any_model
+from django_any.utils import Value
 
-any_field = ExtensionMethod()
-any_model = ExtensionMethod(by_instance=True)
+# Always insert NULL for fields which are not required
+INSERT_NULL = getattr(settings, 'DJANGO_ANY_INSERT_NULL', False)
 
-@any_field.decorator
-def any_field_blank(function):
+@any_field.add_rule
+def any_field_blank(field, **kwargs):
     """
     Sometimes return None if field could be blank
     """
-    def wrapper(field, **kwargs):
-        if kwargs.get('isnull', False):
-            return None
+    if not INSERT_NULL:
+        return
+    if kwargs.get('isnull', False):
+        return Value(None)
+    if field.blank and (random.random < 0.1 or INSERT_NULL):
+        if field.null:
+            return Value(None)
+        # (field.blank == True && field.null != True) => empty string.
+        return Value(u"")
 
-        if field.blank and random.random < 0.1:
-            return None
-        return function(field, **kwargs)
-    return wrapper
-
-
-@any_field.decorator
-def any_field_choices(function):
+@any_field.add_rule
+def any_field_choices(field, **kwargs):
     """
     Selection from field.choices
 
@@ -55,12 +57,8 @@ def any_field_choices(function):
     >>> result in ['YNG', 'OLD']
     True
     """
-    def wrapper(field, **kwargs):
-        if field.choices:
-            return random.choice(list(valid_choices(field.choices)))
-        return function(field, **kwargs)
-
-    return wrapper
+    if getattr(field, 'choices', False):
+        return Value(random.choice(list(valid_choices(field.choices))))
 
 
 @any_field.register(models.BigIntegerField)
@@ -229,7 +227,10 @@ def any_file_field(field, **kwargs):
         if files:
             result_file = random.choice(files)
             instance = field.storage.open("%s/%s" % (path, result_file)).file
-            return FieldFile(instance, field, result_file)
+            out = FieldFile(instance, field, result_file)
+            out.width = 100
+            out.height = 100
+            return out
 
         for subdir in subdirs:
             result = get_some_file("%s/%s" % (path, subdir))
@@ -241,7 +242,10 @@ def any_file_field(field, **kwargs):
         upload_to = os.path.dirname(generated_filepath)
     else:
         upload_to = field.upload_to
-    result = get_some_file(upload_to)
+    try:
+        result = get_some_file(upload_to)
+    except OSError:
+        result = None
 
     if result is None and not field.null:
         raise TypeError("Can't found file in %s for non nullable FileField" % field.upload_to)
@@ -468,68 +472,3 @@ def any_foreignkey_field(field, **kwargs):
 @any_field.register(models.OneToOneField)
 def any_onetoone_field(field, **kwargs):
     return any_model(field.rel.to, **kwargs)
-
-
-def _fill_model_fields(model, **kwargs):
-    model_fields, fields_args = split_model_kwargs(kwargs)
-
-    # fill virtual fields
-    for field in model._meta.virtual_fields:
-        if field.name in model_fields:
-            object = kwargs[field.name]
-            model_fields[field.ct_field] = kwargs[field.ct_field]= ContentType.objects.get_for_model(object)
-            model_fields[field.fk_field] = kwargs[field.fk_field]= object.id
-    # fill local fields
-    for field in model._meta.fields:
-        if field.name in model_fields:
-            if isinstance(kwargs[field.name], Q):
-                """
-                Lookup ForeingKey field in db
-                """
-                key_field = model._meta.get_field(field.name)
-                value = key_field.rel.to.objects.get(kwargs[field.name])
-                setattr(model, field.name, value)
-            else:
-                # TODO support any_model call
-                setattr(model, field.name, kwargs[field.name])
-        elif isinstance(field, models.OneToOneField) and field.rel.parent_link:
-            """
-            skip link to parent instance
-            """
-        elif isinstance(field, models.fields.AutoField):
-            """
-            skip primary key field
-            """
-        elif isinstance(field, models.fields.related.ForeignKey) and field.model == field.rel.to:
-            """
-            skip self relations
-            """
-        else:
-            setattr(model, field.name, any_field(field, **fields_args[field.name]))
-
-    # procceed reversed relations
-    onetoone = [(relation.var_name, relation.field) \
-                for relation in model._meta.get_all_related_objects() \
-                if relation.field.unique] # TODO and not relation.field.rel.parent_link ??
-    for field_name, field in onetoone:
-        if field_name in model_fields:
-            # TODO support any_model call
-            setattr(model, field_name, kwargs[field_name])
-
-
-@any_model.register_default
-def any_model_default(model_cls, **kwargs):
-    result = model_cls()
-
-    attempts = 10
-    while True:
-        try:
-            _fill_model_fields(result, **kwargs)
-            result.full_clean()
-            result.save()
-            return result
-        except (IntegrityError, ValidationError):
-            attempts -= 1
-            if not attempts:
-                raise
-
